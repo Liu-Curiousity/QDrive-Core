@@ -1,12 +1,14 @@
 cmake_minimum_required(VERSION 3.30)
 
-project(qdrive)
+project(QDrive)
 
-add_library(qdrive INTERFACE)
+add_library(QDrive OBJECT QDrive.cpp)
 
-target_sources(qdrive INTERFACE QDrive.cpp)
-
-target_include_directories(qdrive INTERFACE
+target_include_directories(QDrive PUBLIC
         ./
         ./base_classes
+)
+
+target_link_libraries(QDrive
+        PID
 )

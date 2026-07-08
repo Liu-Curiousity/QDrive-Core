@@ -33,8 +33,9 @@
 #include <algorithm>
 #include <numbers>
 #include <numeric>
+#include <cmath>
 #include "QDrive.h"
-#include "FOC_config.h"
+#include "QDrive_cfg.h"
 
 using namespace std;
 
@@ -125,12 +126,12 @@ auto QDrive::calibrate() -> CalibrationStatus {
         for (phase_duty = 0; phase_duty < MAX_DUTY && current_sensor.iw < FOC_MAX_CURRENT * TARGET_CURRENT_RATIO;) {
             phase_duty += 0.001f;
             bldc_driver.set_duty(0, 0, phase_duty);
-            delay(1);
+            QDRIVE_DELAY_MS(1);
         }
         // 测量相电阻
         for (int i = 0; i < SAMPLE_COUNT; ++i) {
             phase_resistance_w += phase_duty * Voltage / current_sensor.iw / 0.75f / SAMPLE_COUNT;
-            delay(1);
+            QDRIVE_DELAY_MS(1);
         }
         if (abs(phase_resistance_w - FOC_PHASE_RESISTANCE) > 3) {
             bldc_driver.set_duty(0, 0, 0);
@@ -143,12 +144,12 @@ auto QDrive::calibrate() -> CalibrationStatus {
         for (phase_duty = 0; phase_duty < MAX_DUTY && current_sensor.iv < FOC_MAX_CURRENT * TARGET_CURRENT_RATIO;) {
             phase_duty += 0.001f;
             bldc_driver.set_duty(0, phase_duty, 0);
-            delay(1);
+            QDRIVE_DELAY_MS(1);
         }
         // 测量相电阻
         for (int i = 0; i < SAMPLE_COUNT; ++i) {
             phase_resistance_v += phase_duty * Voltage / current_sensor.iv / 0.75f / SAMPLE_COUNT;
-            delay(1);
+            QDRIVE_DELAY_MS(1);
         }
         if (abs(phase_resistance_v - FOC_PHASE_RESISTANCE) > 3) {
             bldc_driver.set_duty(0, 0, 0);
@@ -161,12 +162,12 @@ auto QDrive::calibrate() -> CalibrationStatus {
         for (phase_duty = 0; phase_duty < MAX_DUTY && current_sensor.iu < FOC_MAX_CURRENT * TARGET_CURRENT_RATIO;) {
             phase_duty += 0.001f;
             bldc_driver.set_duty(phase_duty, 0, 0);
-            delay(1);
+            QDRIVE_DELAY_MS(1);
         }
         // 测量相电阻
         for (int i = 0; i < SAMPLE_COUNT; ++i) {
             phase_resistance_u += phase_duty * Voltage / current_sensor.iu / 0.75f / SAMPLE_COUNT;
-            delay(1);
+            QDRIVE_DELAY_MS(1);
         }
         if (abs(phase_resistance_u - FOC_PHASE_RESISTANCE) > 3) {
             bldc_driver.set_duty(0, 0, 0);
@@ -188,7 +189,7 @@ auto QDrive::calibrate() -> CalibrationStatus {
 
     /*3.校准编码器正方向,使其与q轴正方向相同*/
     SetPhaseVoltage(voltage_align * 0.6f, 0, 0);
-    delay(SAMPLE_COUNT);
+    QDRIVE_DELAY_MS(SAMPLE_COUNT);
     // 读取电机角度,100次平均
     float begin_angle = 0;
     for (int i = 0; i < SAMPLE_COUNT; ++i) {
@@ -198,7 +199,7 @@ auto QDrive::calibrate() -> CalibrationStatus {
     for (int i = 0; i < 3 * SAMPLE_COUNT; ++i) {
         const float angle = 2 * numbers::pi_v<float> * i / (3 * SAMPLE_COUNT);
         SetPhaseVoltage(voltage_align * 0.6f, 0, angle);
-        delay(1);
+        QDRIVE_DELAY_MS(1);
     }
     // 读取电机角度,SAMPLE_COUNT次平均
     float end_angle = 0;
@@ -223,7 +224,7 @@ auto QDrive::calibrate() -> CalibrationStatus {
         for (int j = 0; j < 2 * SAMPLE_COUNT; ++j) {
             const float angle = 2 * numbers::pi_v<float> * j / (2 * SAMPLE_COUNT);
             SetPhaseVoltage(voltage_align * 0.6f, 0, angle);
-            delay(1);
+            QDRIVE_DELAY_MS(1);
         }
         SetPhaseVoltage(voltage_align, 0, 0);
         // 测量该极对的零点
@@ -231,7 +232,7 @@ auto QDrive::calibrate() -> CalibrationStatus {
         for (int j = 0; j < 2 * SAMPLE_COUNT; ++j) {
             pole_offset += (encoder_direction ? 2 * numbers::pi_v<float> - bldc_encoder.get_angle()
                             : bldc_encoder.get_angle()) / (2 * SAMPLE_COUNT);
-            delay(1);
+            QDRIVE_DELAY_MS(1);
         }
         // 检测：每次转动角度正常,没有堵转
         if (i > 0) {
@@ -252,7 +253,7 @@ auto QDrive::calibrate() -> CalibrationStatus {
         zero_electric_angle += bldc_encoder.resolution - remainder;
 
     calibrated = true;
-    delay(10);
+    QDRIVE_DELAY_MS(10);
     return CalibrationStatus::Success;
 }
 
@@ -266,14 +267,14 @@ auto QDrive::current_calibrate() -> CalibrationStatus {
     calibrated = false;                       // 标记为未校准(停止isr)
 
     SetPhaseVoltage(0, 0, 0); // 设置电压为0
-    delay(30);
+    QDRIVE_DELAY_MS(30);
     iu_offset = iv_offset = 0;
     current_sensor.set_offset(0, 0, 0);
     for (int i = 0; i < SAMPLE_COUNT; ++i) {
         // 读取电流值,200次平均
         iu_offset += current_sensor.iu / SAMPLE_COUNT;
         iv_offset += current_sensor.iv / SAMPLE_COUNT;
-        delay(1);
+        QDRIVE_DELAY_MS(1);
     }
     bldc_driver.set_duty(0, 0, 0);
 
@@ -293,11 +294,11 @@ auto QDrive::anticogging_calibrate() -> CalibrationStatus {
 
     Ctrl(CtrlType::CurrentCtrl, 0); // 释放电机
     anticogging_calibrating = true; // 开始校准,即开始闭环控制
-    delay(5);
+    QDRIVE_DELAY_MS(5);
     // 读取电角度零点校准后的电机角度,并确定补偿表开始索引
     auto index = static_cast<uint16_t>(Angle * numbers::inv_pi_v<float> * 0.5f * map_len);
     Ctrl(CtrlType::AngleCtrl, numbers::pi_v<float> * 2 * index / map_len); // 先定位到前一个点,并延时做准备
-    delay(20);
+    QDRIVE_DELAY_MS(20);
     float angle_ = 0, iq_ = 0;
     // 采集初期几个点不可信任,多采集30个点将其覆盖
     for (int i = 0; i < map_len + 30; ++i) {
@@ -314,7 +315,7 @@ auto QDrive::anticogging_calibrate() -> CalibrationStatus {
             angle_ = angle_ * 0.8f + tmp * 0.2f;
             speed_ = speed_ * 0.97f + Speed * 0.03f;
             iq_ = iq_ * 0.80f + Iq * 0.20f;
-            delay(1);
+            QDRIVE_DELAY_MS(1);
         }
         anticogging_map[index] = iq_;
     }
