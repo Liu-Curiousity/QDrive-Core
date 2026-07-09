@@ -3,8 +3,8 @@
  * @brief       QDrive FOC驱动库
  * @details
  * @author      Liu-Curiousity (2675794963@qq.com)
- * @date        2026-7-2
- * @version     V5.3.2
+ * @date        2026-7-9
+ * @version     V5.3.3
  * @note        此库为中间层库,与硬件完全解耦
  * @warning
  * @par         历史版本:
@@ -27,6 +27,7 @@
  *		        V5.3.0修改于2026-5-30,添加校准异常检测,提高校准速度,优化校准效果添加校准异常检测,提高校准速度,优化校准效果
  *		        V5.3.1修改于2026-6-14,适配PID重构,修复若干问题
  *		        V5.3.2修改于2026-7-2,优化driver error检测方式,修复低速模式下停转的问题
+ *		        V5.3.3修改于2026-7-9,修复高频角度控制时过零点偶现的抽搐问题
  * @copyright   (c) 2026 QDrive
  */
 
@@ -247,7 +248,8 @@ auto QDrive::calibrate() -> CalibrationStatus {
     }
     bldc_driver.set_duty(0, 0, 0);
     zero_electric_angle = (sum_offset_angle - numbers::pi_v<float> * (pole_pairs - 1)) / pole_pairs;
-    if (const auto remainder = fmod(zero_electric_angle, bldc_encoder.resolution); remainder < bldc_encoder.resolution / 2)
+    if (const auto remainder = fmod(zero_electric_angle, bldc_encoder.resolution);
+        remainder < bldc_encoder.resolution / 2)
         zero_electric_angle -= remainder;
     else
         zero_electric_angle += bldc_encoder.resolution - remainder;
@@ -292,18 +294,18 @@ auto QDrive::anticogging_calibrate() -> CalibrationStatus {
     if (!anticogging_map) return CalibrationStatus::EnvironmentError; // 如果补偿表指针为空,则不能校准
     anticogging_calibrated = false;                                   // 标记为未校准
 
-    Ctrl(CtrlType::CurrentCtrl, 0); // 释放电机
-    anticogging_calibrating = true; // 开始校准,即开始闭环控制
+    Ctrl({CtrlType::CurrentCtrl, 0}); // 释放电机
+    anticogging_calibrating = true;   // 开始校准,即开始闭环控制
     QDRIVE_DELAY_MS(5);
     // 读取电角度零点校准后的电机角度,并确定补偿表开始索引
     auto index = static_cast<uint16_t>(Angle * numbers::inv_pi_v<float> * 0.5f * map_len);
-    Ctrl(CtrlType::AngleCtrl, numbers::pi_v<float> * 2 * index / map_len); // 先定位到前一个点,并延时做准备
+    Ctrl({CtrlType::AngleCtrl, numbers::pi_v<float> * 2 * index / map_len}); // 先定位到前一个点,并延时做准备
     QDRIVE_DELAY_MS(20);
     float angle_ = 0, iq_ = 0;
     // 采集初期几个点不可信任,多采集30个点将其覆盖
     for (int i = 0; i < map_len + 30; ++i) {
         index = (index + 1) % map_len;
-        Ctrl(CtrlType::AngleCtrl, numbers::pi_v<float> * 2 * index / map_len);
+        Ctrl({CtrlType::AngleCtrl, numbers::pi_v<float> * 2 * index / map_len});
         float speed_ = 0.3;
         while (abs(angle_ - numbers::pi_v<float> * 2 * index / map_len) > numbers::pi_v<float> * 2 / map_len / 10 ||
                abs(speed_) > 0.08) {
@@ -319,8 +321,8 @@ auto QDrive::anticogging_calibrate() -> CalibrationStatus {
         }
         anticogging_map[index] = iq_;
     }
-    Ctrl(CtrlType::CurrentCtrl, 0);  // 释放电机
-    anticogging_calibrating = false; // 结束校准,即关闭闭环控制
+    Ctrl({CtrlType::CurrentCtrl, 0}); // 释放电机
+    anticogging_calibrating = false;  // 结束校准,即关闭闭环控制
     // 后处理:将补偿表平移到0点(应为正转校准时的Iq平均值大于0(需推动转子转动))
     const float anticogging_avg = accumulate(anticogging_map, anticogging_map + map_len, 0.0f) / map_len;
     for (int i = 0; i < map_len; ++i) {
@@ -404,35 +406,45 @@ void QDrive::updateVoltage(const float voltage) {
     Voltage = voltage;
 }
 
-void QDrive::Ctrl(const CtrlType ctrl_type, float value) {
-    switch (ctrl_type) {
+void QDrive::Ctrl(CtrlType ctrl_type) {
+    pre_ctrl_type = ctrl_type;
+}
+
+void QDrive::load_ctrl(const float angle) {
+    if (pre_ctrl_type.type == CtrlType::NoCtrl) return;
+    switch (pre_ctrl_type.type) {
         case CtrlType::LowSpeedCtrl:
-            low_speed = value;                // 设置低速控制速度
-            if (this->ctrl_type != ctrl_type) // 当前控制模式不是低速控制时, 才设置角度
-                PID_Angle.SetTarget(Angle);   // 使用当前角度为低速控制起始角度
+            if (ctrl_type.type != pre_ctrl_type.type) // 当前控制模式不是低速控制时, 才设置角度
+                PID_Angle.SetTarget(angle);           // 使用当前角度为低速控制起始角度
             break;
         case CtrlType::StepAngleCtrl:
-            if (this->ctrl_type == ctrl_type)
-                PID_Angle.SetTarget(PID_Angle.target + value);
+            if (ctrl_type.type == pre_ctrl_type.type)
+                PID_Angle.SetTarget(PID_Angle.target + pre_ctrl_type.value);
             else
-                PID_Angle.SetTarget(Angle + value);
+                PID_Angle.SetTarget(angle + pre_ctrl_type.value);
             break;
         case CtrlType::AngleCtrl:
             // 使电机始终沿差值小于pi的方向转动
-            PID_Angle.SetTarget(Angle + wrap(value - Angle, -numbers::pi_v<float>, numbers::pi_v<float>));
+            PID_Angle.SetTarget(angle + wrap(pre_ctrl_type.value - angle, -numbers::pi_v<float>,
+                                             numbers::pi_v<float>));
             break;
         case CtrlType::SpeedCtrl:
             if (PID_Angle.output_limit_n && PID_Angle.output_limit_p)
-                value = clamp(value, PID_Angle.output_limit_n.value(), PID_Angle.output_limit_p.value()); // 限制最大速度
-            PID_Speed.SetTarget(value);
+                pre_ctrl_type.value = clamp(pre_ctrl_type.value, PID_Angle.output_limit_n.value(),
+                                            PID_Angle.output_limit_p.value()); // 限制最大速度
+            PID_Speed.SetTarget(pre_ctrl_type.value);
             break;
         case CtrlType::CurrentCtrl:
             if (PID_Speed.output_limit_n && PID_Speed.output_limit_p)
-                value = clamp(value, PID_Speed.output_limit_n.value(), PID_Speed.output_limit_p.value()); // 限制最大电流
-            target_iq = value;
+                pre_ctrl_type.value = clamp(pre_ctrl_type.value, PID_Speed.output_limit_n.value(),
+                                            PID_Speed.output_limit_p.value()); // 限制最大电流
+            target_iq = pre_ctrl_type.value;
+            break;
+        case CtrlType::NoCtrl:
             break;
     }
-    this->ctrl_type = ctrl_type;
+    ctrl_type = pre_ctrl_type;
+    pre_ctrl_type = {CtrlType::NoCtrl, 0};
 }
 
 __attribute__((section(".ccmram_func")))
@@ -445,25 +457,30 @@ void QDrive::Ctrl_ISR() {
         PreviousAngle_ = Angle;
         return;
     }
-    Angle_ = Angle;
 
-    /**1.速度闭环控制**/
-    switch (ctrl_type) {
+    /*应用控制命令*/
+    load_ctrl(Angle_);
+    Angle_ = Angle;
+    switch (ctrl_type.type) {
+        /**1.角度步进实现的低速控制**/
         case CtrlType::LowSpeedCtrl:
-            // 角度步进实现的低速控制
-            PID_Angle.SetTarget(PID_Angle.target + numbers::pi_v<float> * 2 * low_speed / CtrlFrequency / 60);
+            PID_Angle.SetTarget(PID_Angle.target + numbers::pi_v<float> * 2 * ctrl_type.value / CtrlFrequency / 60);
+        /**2.角度、角度步进控制**/
         case CtrlType::AngleCtrl:
         case CtrlType::StepAngleCtrl:
-            if (PreviousAngle_ - Angle_ > numbers::pi_v<float>)
+            if (PreviousAngle_ - Angle_ > numbers::pi_v<float>) {
                 PID_Angle.target -= 2 * numbers::pi_v<float>;
-            else if (PreviousAngle_ - Angle_ < -numbers::pi_v<float>)
+            } else if (PreviousAngle_ - Angle_ < -numbers::pi_v<float>) {
                 PID_Angle.target += 2 * numbers::pi_v<float>;
-            if ((ctrl_type != CtrlType::LowSpeedCtrl || low_speed == 0) && // 利用C/C++短路机制
+            }
+            if ((ctrl_type.type != CtrlType::LowSpeedCtrl || ctrl_type.value == 0) && // 利用C/C++短路机制
                 abs(PID_Angle.target - Angle_) < bldc_encoder.resolution / 2)
                 PID_Angle.target = Angle_;
             PID_Speed.SetTarget(PID_Angle.calc(Angle_));
+        /**3.速度控制**/
         case CtrlType::SpeedCtrl:
             target_iq = PID_Speed.calc(Speed);
+        /**4.电流控制**/
         case CtrlType::CurrentCtrl:
             /*齿槽转矩补偿*/
             if (anticogging_enabled && anticogging_calibrated && anticogging_calibrating) {
@@ -473,6 +490,8 @@ void QDrive::Ctrl_ISR() {
             } else {
                 PID_CurrentQ.SetTarget(target_iq);
             }
+            break;
+        case CtrlType::NoCtrl:
             break;
     }
     PreviousAngle_ = Angle_;

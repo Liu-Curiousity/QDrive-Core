@@ -3,8 +3,8 @@
  * @brief       QDrive FOC驱动库
  * @details
  * @author      Liu-Curiousity (2675794963@qq.com)
- * @date        2026-7-2
- * @version     V5.3.2
+ * @date        2026-7-9
+ * @version     V5.3.3
  * @note        此库为中间层库,与硬件完全解耦
  * @warning
  * @par         历史版本:
@@ -27,6 +27,7 @@
  *		        V5.3.0修改于2026-5-30,添加校准异常检测,提高校准速度,优化校准效果添加校准异常检测,提高校准速度,优化校准效果
  *		        V5.3.1修改于2026-6-14,适配PID重构,修复若干问题
  *		        V5.3.2修改于2026-7-2,优化driver error检测方式,修复低速模式下停转的问题
+ *		        V5.3.3修改于2026-7-9,修复高频角度控制时过零点偶现的抽搐问题
  * @copyright   (c) 2026 QDrive
  */
 
@@ -45,12 +46,17 @@
  */
 class QDrive {
 public:
-    enum class CtrlType {
-        CurrentCtrl = 0,
-        SpeedCtrl = 1,
-        AngleCtrl = 2,
-        StepAngleCtrl = 3,
-        LowSpeedCtrl = 4,
+    struct CtrlType {
+        enum Type {
+            CurrentCtrl = 0,
+            SpeedCtrl = 1,
+            AngleCtrl = 2,
+            StepAngleCtrl = 3,
+            LowSpeedCtrl = 4,
+            NoCtrl = 0xFF,
+        } type = NoCtrl;
+
+        float value = 0;
     };
 
     enum class CalibrationStatus {
@@ -81,9 +87,9 @@ public:
      * @param PID_Angle 角度PID
      */
     QDrive(const uint8_t pole_pairs, const uint16_t CtrlFrequency, const uint16_t CurrentCtrlFrequency,
-        Filter& CurrentQFilter, Filter& CurrentDFilter, Filter& SpeedFilter,
-        BLDC_Driver& driver, Encoder& encoder, CurrentSensor& current_sensor,
-        const PID& PID_CurrentQ, const PID& PID_CurrentD, const PID& PID_Speed, const PID& PID_Angle) :
+           Filter& CurrentQFilter, Filter& CurrentDFilter, Filter& SpeedFilter,
+           BLDC_Driver& driver, Encoder& encoder, CurrentSensor& current_sensor,
+           const PID& PID_CurrentQ, const PID& PID_CurrentD, const PID& PID_Speed, const PID& PID_Angle) :
         pole_pairs(pole_pairs), CtrlFrequency(CtrlFrequency), CurrentCtrlFrequency(CurrentCtrlFrequency),
         PID_CurrentQ(PID_CurrentQ), PID_CurrentD(PID_CurrentD), PID_Speed(PID_Speed), PID_Angle(PID_Angle),
         bldc_driver(driver), bldc_encoder(encoder), current_sensor(current_sensor),
@@ -113,9 +119,8 @@ public:
     /**
      * @brief FOC控制设置函数
      * @param ctrl_type 控制类型
-     * @param value 控制值
      */
-    void Ctrl(CtrlType ctrl_type, float value);
+    void Ctrl(CtrlType ctrl_type);
 
     /**
      * @brief FOC控制(速度环、角度环)中断服务函数
@@ -147,11 +152,12 @@ public:
 
 protected:
     //PID类
-    PID PID_CurrentQ;      //Q轴电流PID
-    PID PID_CurrentD;      //D轴电流PID
-    PID PID_Speed;         //速度PID
-    PID PID_Angle;         //角度PID
-    float target_iq{0.0f}; //目标Q轴电流
+    PID PID_CurrentQ;         // Q轴电流PID
+    PID PID_CurrentD;         // D轴电流PID
+    PID PID_Speed;            // 速度PID
+    PID PID_Angle;            // 角度PID
+    CtrlType pre_ctrl_type{}; // 预控制量
+    float target_iq{0.0f};    // 目标Q轴电流
 
     float Voltage{1}; //母线电压
 
@@ -169,21 +175,19 @@ protected:
     static float wrap(float value, float min, float max);
 
 private:
-    CtrlType ctrl_type{CtrlType::CurrentCtrl}; //当前控制类型
-    BLDC_Driver& bldc_driver;                  //驱动器
-    Encoder& bldc_encoder;                     //编码器
-    CurrentSensor& current_sensor;             //电流传感器
-    Filter& CurrentQFilter;                    //Q轴电流低通滤波器
-    Filter& CurrentDFilter;                    //D轴电流低通滤波器
-    Filter& SpeedFilter;                       //速度低通滤波器
+    CtrlType ctrl_type{CtrlType::CurrentCtrl, 0}; //当前控制类型
+    BLDC_Driver& bldc_driver;                     //驱动器
+    Encoder& bldc_encoder;                        //编码器
+    CurrentSensor& current_sensor;                //电流传感器
+    Filter& CurrentQFilter;                       //Q轴电流低通滤波器
+    Filter& CurrentDFilter;                       //D轴电流低通滤波器
+    Filter& SpeedFilter;                          //速度低通滤波器
 
     // 运行时参数
     float Angle{0};           // 当前电机角度,单位rad
     float PreviousAngle{0};   // 上一次电机角度(速度环、角度环更新中),单位rad
     float ElectricalAngle{0}; // 当前电机电角度,单位rad
     float Speed{0};           // 电机转速,单位rpm
-    // 极低速控制
-    float low_speed{0}; // 单位rpm
 
     float Uu{0}; //U相电压
     float Uv{0}; //V相电压
@@ -201,6 +205,7 @@ private:
     float Iq{0}; //Q轴电流,单位A
     float Id{0}; //D轴电流,单位A
 
+    void load_ctrl(float angle);
     void UpdateCurrent(float iu, float iv, float iw);
     void SetPhaseVoltage(float ud, float uq, float electrical_angle);
 };
