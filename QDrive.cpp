@@ -3,8 +3,8 @@
  * @brief       QDrive FOC驱动库
  * @details
  * @author      Liu-Curiousity (2675794963@qq.com)
- * @date        2026-7-9
- * @version     V5.3.3
+ * @date        2026-7-17
+ * @version     V5.3.4
  * @note        此库为中间层库,与硬件完全解耦
  * @warning
  * @par         历史版本:
@@ -28,6 +28,7 @@
  *		        V5.3.1修改于2026-6-14,适配PID重构,修复若干问题
  *		        V5.3.2修改于2026-7-2,优化driver error检测方式,修复低速模式下停转的问题
  *		        V5.3.3修改于2026-7-9,修复高频角度控制时过零点偶现的抽搐问题
+ *		        V5.3.4修改于2026-7-17,修复数据同步问题导致的控制指令异常
  * @copyright   (c) 2026 QDrive
  */
 
@@ -407,7 +408,9 @@ void QDrive::updateVoltage(const float voltage) {
 }
 
 void QDrive::Ctrl(CtrlType ctrl_type) {
-    pre_ctrl_type = ctrl_type;
+    // 数据同步问题，必须先赋值value，再赋值type，否则被打断后会出问题
+    pre_ctrl_type.value = ctrl_type.value;
+    pre_ctrl_type.type = ctrl_type.type;
 }
 
 void QDrive::load_ctrl(const float angle) {
