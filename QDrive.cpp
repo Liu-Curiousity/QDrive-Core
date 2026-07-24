@@ -3,8 +3,8 @@
  * @brief       QDrive FOC驱动库
  * @details
  * @author      Liu-Curiousity (2675794963@qq.com)
- * @date        2026-7-17
- * @version     V5.3.4
+ * @date        2026-7-24
+ * @version     V5.3.5
  * @note        此库为中间层库,与硬件完全解耦
  * @warning
  * @par         历史版本:
@@ -29,6 +29,7 @@
  *		        V5.3.2修改于2026-7-2,优化driver error检测方式,修复低速模式下停转的问题
  *		        V5.3.3修改于2026-7-9,修复高频角度控制时过零点偶现的抽搐问题
  *		        V5.3.4修改于2026-7-17,修复数据同步问题导致的控制指令异常
+ *		        V5.3.5修改于2026-7-24,修复5.3.4引入的失能后不运行load_ctrl()导致控制失效的问题
  * @copyright   (c) 2026 QDrive
  */
 
@@ -456,46 +457,44 @@ void QDrive::Ctrl_ISR() {
     static float Angle_ = Angle;
     if (!enabled) return;
     if (!calibrated) return;
-    if (!started && !anticogging_calibrating) {
-        PreviousAngle_ = Angle;
-        return;
-    }
 
     /*应用控制命令*/
     load_ctrl(Angle_);
     Angle_ = Angle;
-    switch (ctrl_type.type) {
-        /**1.角度步进实现的低速控制**/
-        case CtrlType::LowSpeedCtrl:
-            PID_Angle.SetTarget(PID_Angle.target + numbers::pi_v<float> * 2 * ctrl_type.value / CtrlFrequency / 60);
-        /**2.角度、角度步进控制**/
-        case CtrlType::AngleCtrl:
-        case CtrlType::StepAngleCtrl:
-            if (PreviousAngle_ - Angle_ > numbers::pi_v<float>) {
-                PID_Angle.target -= 2 * numbers::pi_v<float>;
-            } else if (PreviousAngle_ - Angle_ < -numbers::pi_v<float>) {
-                PID_Angle.target += 2 * numbers::pi_v<float>;
-            }
-            if ((ctrl_type.type != CtrlType::LowSpeedCtrl || ctrl_type.value == 0) && // 利用C/C++短路机制
-                abs(PID_Angle.target - Angle_) < bldc_encoder.resolution / 2)
-                PID_Angle.target = Angle_;
-            PID_Speed.SetTarget(PID_Angle.calc(Angle_));
-        /**3.速度控制**/
-        case CtrlType::SpeedCtrl:
-            target_iq = PID_Speed.calc(Speed);
-        /**4.电流控制**/
-        case CtrlType::CurrentCtrl:
-            /*齿槽转矩补偿*/
-            if (anticogging_enabled && anticogging_calibrated && anticogging_calibrating) {
-                const uint16_t index =
-                    static_cast<uint16_t>(Angle_ * map_len * 0.5f * numbers::inv_pi_v<float> + 0.5f) % map_len;
-                PID_CurrentQ.SetTarget(target_iq + anticogging_map[index]);
-            } else {
-                PID_CurrentQ.SetTarget(target_iq);
-            }
-            break;
-        case CtrlType::NoCtrl:
-            break;
+    if (started || anticogging_calibrating) {
+        switch (ctrl_type.type) {
+            /**1.角度步进实现的低速控制**/
+            case CtrlType::LowSpeedCtrl:
+                PID_Angle.SetTarget(PID_Angle.target + numbers::pi_v<float> * 2 * ctrl_type.value / CtrlFrequency / 60);
+            /**2.角度、角度步进控制**/
+            case CtrlType::AngleCtrl:
+            case CtrlType::StepAngleCtrl:
+                if (PreviousAngle_ - Angle_ > numbers::pi_v<float>) {
+                    PID_Angle.target -= 2 * numbers::pi_v<float>;
+                } else if (PreviousAngle_ - Angle_ < -numbers::pi_v<float>) {
+                    PID_Angle.target += 2 * numbers::pi_v<float>;
+                }
+                if ((ctrl_type.type != CtrlType::LowSpeedCtrl || ctrl_type.value == 0) && // 利用C/C++短路机制
+                    abs(PID_Angle.target - Angle_) < bldc_encoder.resolution / 2)
+                    PID_Angle.target = Angle_;
+                PID_Speed.SetTarget(PID_Angle.calc(Angle_));
+            /**3.速度控制**/
+            case CtrlType::SpeedCtrl:
+                target_iq = PID_Speed.calc(Speed);
+            /**4.电流控制**/
+            case CtrlType::CurrentCtrl:
+                /*齿槽转矩补偿*/
+                if (anticogging_enabled && anticogging_calibrated && anticogging_calibrating) {
+                    const uint16_t index =
+                        static_cast<uint16_t>(Angle_ * map_len * 0.5f * numbers::inv_pi_v<float> + 0.5f) % map_len;
+                    PID_CurrentQ.SetTarget(target_iq + anticogging_map[index]);
+                } else {
+                    PID_CurrentQ.SetTarget(target_iq);
+                }
+                break;
+            case CtrlType::NoCtrl:
+                break;
+        }
     }
     PreviousAngle_ = Angle_;
 }
