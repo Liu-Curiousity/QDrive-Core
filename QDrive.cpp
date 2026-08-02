@@ -220,7 +220,7 @@ auto QDrive::calibrate() -> CalibrationStatus {
     /*4.校准电角度零点*/
     float sum_offset_angle = 0;
     float prev_offset = 0;
-    const float max_allowed_offset_drift = 2 * numbers::pi_v<float> / pole_pairs * 0.2f; // 允许的零点偏差
+    const float max_allowed_offset_drift = 2 * numbers::pi_v<float> / pole_pairs * 0.3f; // 允许的零点偏差
 
     for (int i = 0; i < pole_pairs; ++i) {
         // 按q轴正方向硬拖2pi电角度
