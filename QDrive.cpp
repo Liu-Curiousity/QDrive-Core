@@ -3,8 +3,8 @@
  * @brief       QDrive FOC驱动库
  * @details
  * @author      Liu-Curiousity (2675794963@qq.com)
- * @date        2026-7-24
- * @version     V5.3.5
+ * @date        2026-8-11
+ * @version     V5.3.6
  * @note        此库为中间层库,与硬件完全解耦
  * @warning
  * @par         历史版本:
@@ -30,6 +30,7 @@
  *		        V5.3.3修改于2026-7-9,修复高频角度控制时过零点偶现的抽搐问题
  *		        V5.3.4修改于2026-7-17,修复数据同步问题导致的控制指令异常
  *		        V5.3.5修改于2026-7-24,修复5.3.4引入的失能后不运行load_ctrl()导致控制失效的问题
+ *		        V5.3.6修改于2026-8-11,SPWM改SVPWM
  * @copyright   (c) 2026 QDrive
  */
 
@@ -358,6 +359,8 @@ void QDrive::UpdateCurrent(const float iu, const float iv, const float iw) {
     Id = CurrentDFilter(Ib * sin_angle + Ia * cos_angle);
 }
 
+float U0;
+
 /**
  * @brief FOC控制函数
  * @param ud 法向力矩,必须在0~1之间!
@@ -366,19 +369,17 @@ void QDrive::UpdateCurrent(const float iu, const float iv, const float iw) {
  */
 __attribute__((section(".ccmram_func")))
 void QDrive::SetPhaseVoltage(float ud, float uq, const float electrical_angle) {
-    // Uu,Uv,Uw不能设置到最大值1,为了防止电流采样时候MOS对电机有驱动,影响采样
-    // 表现为某一相Ux=0时候(堵转测试),电流采样值偶尔出现尖峰,电机异常抽搐
-    ud *= 0.99f;
-    uq *= 0.99f;
-
-    /**1.保存电压值**/
     if (const float u_join_2 = ud * ud + uq * uq; u_join_2 > 1.0f) {
         const float scale = 1.0f / sqrt(u_join_2);
         ud *= scale;
         uq *= scale;
     }
-    Ud = ud;
-    Uq = uq;
+    // Uu,Uv,Uw不能设置到最大值1,为了防止电流采样时候MOS对电机有驱动,影响采样
+    // 表现为某一相Ux=0时候(堵转测试),电流采样值偶尔出现尖峰,电机异常抽搐
+
+    /**1.保存电压值**/
+    Ud = ud * 0.985f;
+    Uq = uq * 0.985f;
 
     /**2.帕克逆变换**/
     const float cos_angle = cosf(electrical_angle);
@@ -387,15 +388,21 @@ void QDrive::SetPhaseVoltage(float ud, float uq, const float electrical_angle) {
     Ub = (Uq * cos_angle + Ud * sin_angle) * 0.5f;  // 除以2将Ub范围限制在[-0.5,0.5],使后续Uu,Uv,Uw范围在[0,1]
 
     /**3.克拉克逆变换**/
-    Uu = Ua + 0.5f; //加0.5使得Uu均值为0.5,在[0,1]之间变化
-    Uv = -Ua * 0.5f + Ub * numbers::sqrt3_v<float> * 0.5f + 0.5f;
+    float Uu_ = Ua; //加0.5使得Uu均值为0.5,在[0,1]之间变化
+    float Uv_ = -Ua * 0.5f + Ub * numbers::sqrt3_v<float> * 0.5f;
 
     // 原公式:
-    // float Uw = -Ua * 0.5f - Ub * M_SQRT3_F * 0.5f + 0.5f;
+    // Uw = -Ua * 0.5f - Ub * M_SQRT3_F * 0.5f;
     // 使用Uu,Uv计算得来,减少运算量(其实运算量大头在sin和cos):
-    Uw = 1.5f - Uu - Uv;
+    float Uw_ = -Uu_ - Uv_;
 
-    /**4.设置驱动器占空比**/
+    /**4.SPWM转SVPWM(三角波注入法)**/
+    U0 = (max({Uu_, Uv_, Uw_}) + min({Uu_, Uv_, Uw_})) * 0.5f;
+    Uu = (Uu_ - U0) * numbers::inv_sqrt3_v<float> * 2 + 0.5f;
+    Uv = (Uv_ - U0) * numbers::inv_sqrt3_v<float> * 2 + 0.5f;
+    Uw = (Uw_ - U0) * numbers::inv_sqrt3_v<float> * 2 + 0.5f;
+
+    /**5.设置驱动器占空比**/
     bldc_driver.set_duty(Uu, Uv, Uw);
 }
 
