@@ -3,8 +3,8 @@
  * @brief       QDrive FOC驱动库
  * @details
  * @author      Liu-Curiousity (2675794963@qq.com)
- * @date        2026-8-11
- * @version     V5.3.6
+ * @date        2026-8-29
+ * @version     V5.3.7
  * @note        此库为中间层库,与硬件完全解耦
  * @warning
  * @par         历史版本:
@@ -31,6 +31,7 @@
  *		        V5.3.4修改于2026-7-17,修复数据同步问题导致的控制指令异常
  *		        V5.3.5修改于2026-7-24,修复5.3.4引入的失能后不运行load_ctrl()导致控制失效的问题
  *		        V5.3.6修改于2026-8-11,SPWM改SVPWM
+ *		        V5.3.7修改于2026-8-29,切换模式复位PID
  * @copyright   (c) 2026 QDrive
  */
 
@@ -425,27 +426,35 @@ void QDrive::load_ctrl(const float angle) {
     if (pre_ctrl_type.type == CtrlType::NoCtrl) return;
     switch (pre_ctrl_type.type) {
         case CtrlType::LowSpeedCtrl:
-            if (ctrl_type.type != pre_ctrl_type.type) // 当前控制模式不是低速控制时, 才设置角度
-                PID_Angle.SetTarget(angle);           // 使用当前角度为低速控制起始角度
+            if (ctrl_type.type != pre_ctrl_type.type) {
+                // 当前控制模式不是低速控制时, 才设置角度
+                PID_Angle.reset();          // 重置PID角度环
+                PID_Angle.SetTarget(angle); // 使用当前角度为低速控制起始角度
+            }
             break;
         case CtrlType::StepAngleCtrl:
-            if (ctrl_type.type == pre_ctrl_type.type)
-                PID_Angle.SetTarget(PID_Angle.target + pre_ctrl_type.value);
-            else
+            if (ctrl_type.type != pre_ctrl_type.type) {
+                PID_Angle.reset(); // 重置PID角度环
                 PID_Angle.SetTarget(angle + pre_ctrl_type.value);
+            } else {
+                PID_Angle.SetTarget(PID_Angle.target + pre_ctrl_type.value);
+            }
             break;
         case CtrlType::AngleCtrl:
+            if (ctrl_type.type != pre_ctrl_type.type) PID_Angle.reset(); // 重置PID角度环
             // 使电机始终沿差值小于pi的方向转动
             PID_Angle.SetTarget(angle + wrap(pre_ctrl_type.value - angle, -numbers::pi_v<float>,
                                              numbers::pi_v<float>));
             break;
         case CtrlType::SpeedCtrl:
+            if (ctrl_type.type != pre_ctrl_type.type) PID_Speed.reset(); // 重置PID速度环
             if (PID_Angle.output_limit_n && PID_Angle.output_limit_p)
                 pre_ctrl_type.value = clamp(pre_ctrl_type.value, PID_Angle.output_limit_n.value(),
                                             PID_Angle.output_limit_p.value()); // 限制最大速度
             PID_Speed.SetTarget(pre_ctrl_type.value);
             break;
         case CtrlType::CurrentCtrl:
+            if (ctrl_type.type != pre_ctrl_type.type) PID_CurrentQ.reset(); // 重置PID电流环
             if (PID_Speed.output_limit_n && PID_Speed.output_limit_p)
                 pre_ctrl_type.value = clamp(pre_ctrl_type.value, PID_Speed.output_limit_n.value(),
                                             PID_Speed.output_limit_p.value()); // 限制最大电流
@@ -455,7 +464,7 @@ void QDrive::load_ctrl(const float angle) {
             break;
     }
     ctrl_type = pre_ctrl_type;
-    pre_ctrl_type = {CtrlType::NoCtrl, 0};
+    pre_ctrl_type = {.type = CtrlType::NoCtrl, .value = 0};
 }
 
 __attribute__((section(".ccmram_func")))

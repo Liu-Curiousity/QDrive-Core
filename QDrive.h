@@ -3,8 +3,8 @@
  * @brief       QDrive FOC驱动库
  * @details
  * @author      Liu-Curiousity (2675794963@qq.com)
- * @date        2026-7-24
- * @version     V5.3.5
+ * @date        2026-8-29
+ * @version     V5.3.6
  * @note        此库为中间层库,与硬件完全解耦
  * @warning
  * @par         历史版本:
@@ -30,6 +30,8 @@
  *		        V5.3.3修改于2026-7-9,修复高频角度控制时过零点偶现的抽搐问题
  *		        V5.3.4修改于2026-7-17,修复数据同步问题导致的控制指令异常
  *		        V5.3.5修改于2026-7-24,修复5.3.4引入的失能后不运行load_ctrl()导致控制失效的问题
+ *		        V5.3.6修改于2026-8-11,SPWM改SVPWM
+ *		        V5.3.7修改于2026-8-29,切换模式复位PID
  * @copyright   (c) 2026 QDrive
  */
 
@@ -177,7 +179,7 @@ protected:
     static float wrap(float value, float min, float max);
 
 private:
-    CtrlType ctrl_type{CtrlType::CurrentCtrl, 0}; //当前控制类型
+    CtrlType ctrl_type{.type = CtrlType::CurrentCtrl, .value = 0}; //当前控制类型
     BLDC_Driver& bldc_driver;                     //驱动器
     Encoder& bldc_encoder;                        //编码器
     CurrentSensor& current_sensor;                //电流传感器

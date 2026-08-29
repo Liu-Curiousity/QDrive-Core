@@ -10,5 +10,5 @@ target_include_directories(QDrive PUBLIC
 )
 
 target_link_libraries(QDrive
-        PID
+        pid
 )
